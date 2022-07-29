@@ -17,13 +17,14 @@ class PIDCalibrate:
         heater_name = gcmd.get('HEATER')
         target = gcmd.get_float('TARGET')
         write_file = gcmd.get_int('WRITE_FILE', 0)
+        tolerance = gcmd.get_float('TOLERANCE', TUNE_PID_TEMP_TOL, above=0.)
         pheaters = self.printer.lookup_object('heaters')
         try:
             heater = pheaters.lookup_heater(heater_name)
         except self.printer.config_error as e:
             raise gcmd.error(str(e))
         self.printer.lookup_object('toolhead').get_last_move_time()
-        calibrate = ControlAutoTune(heater, target)
+        calibrate = ControlAutoTune(heater, target, tolerance)
         old_control = heater.set_control(calibrate)
         try:
             pheaters.set_temperature(heater, target, True)
@@ -50,12 +51,12 @@ class PIDCalibrate:
         configfile.set(heater_name, 'pid_Kd', "%.3f" % (Kd,))
 
 TUNE_PID_DELTA = 5.0
-TUNE_PID_TEMP_TOL = 0.1
+TUNE_PID_TEMP_TOL = 0.2
 TUNE_PID_SAMPLES = 3
 TUNE_PID_MAX_PEAKS = 40
 
 class ControlAutoTune:
-    def __init__(self, heater, target):
+    def __init__(self, heater, target, tolerance):
         self.heater = heater
         self.heater_max_power = heater.get_max_power()
         # store the reference so we can push messages if needed
@@ -64,6 +65,8 @@ class ControlAutoTune:
         self.powers = [self.heater_max_power]
         # the target temperature to tune for
         self.target = target
+        # the tolerance that determines if a sample is close enough
+        self.tolerance = tolerance
         # the the temp that determines when to turn the heater off
         self.temp_high = target + TUNE_PID_DELTA/2.
         # the the temp that determines when to turn the heater on
@@ -128,12 +131,6 @@ class ControlAutoTune:
             powers = float(len(self.powers))
             if (peaks % 2.) == 0. and (powers * 2.) == peaks:
                 self.sample()        
-                # error if the calculated new power is to high
-                if self.powers[-1] > self.heater_max_power:
-                    self.errored = True
-                    self.finish(read_time)
-                    self.gcode.respond_info("calculated power to high")
-                    return
                 # check if enough consecutive good samples have been collected 
                 # to calculate the average. if so finish
                 if self.in_tol == TUNE_PID_SAMPLES + 1:
@@ -182,14 +179,14 @@ class ControlAutoTune:
         last = self.powers[-2]
         curr = self.powers[-1]
         samp = len(self.powers) - 1
-        self.gcode.respond_info("sample:%d bias:%.4f pwm:%.4f new pwm:%.4f\n" 
+        self.gcode.respond_info("sample:%d deviance:%.4f pwm:%.4f new pwm:%.4f\n" 
             % (samp, diff, last, curr))
     def within_tolerance(self): 
         peak_low = self.peaks[-2][1]
         peak_high = self.peaks[-1][1]
         mid = (peak_low+peak_high)/2.
         diff = abs(self.target - mid)
-        if diff <= TUNE_PID_TEMP_TOL:
+        if diff <= self.tolerance:
             return True
         return False
     def set_power(self):
@@ -197,6 +194,10 @@ class ControlAutoTune:
         peak_high = self.peaks[-1][1]
         power = self.powers[-1]
         mid = power * ((self.target - peak_low)/(peak_high - peak_low))
+        if mid * 2. > self.heater_max_power:
+            # the new power is to high so just return max power
+            self.powers.append(self.heater_max_power)
+            return 
         self.powers.append(mid * 2.) 
     def finish(self, time):
             self.heater.set_pwm(time, 0)
