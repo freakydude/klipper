@@ -17,7 +17,7 @@ class PIDCalibrate:
         heater_name = gcmd.get('HEATER')
         target = gcmd.get_float('TARGET')
         write_file = gcmd.get_int('WRITE_FILE', 0)
-        tolerance = gcmd.get_float('TOLERANCE', TUNE_PID_TEMP_TOL, above=0.)
+        tolerance = gcmd.get_float('TOLERANCE', TUNE_PID_TOL, above=0.)
         pheaters = self.printer.lookup_object('heaters')
         try:
             heater = pheaters.lookup_heater(heater_name)
@@ -51,7 +51,7 @@ class PIDCalibrate:
         configfile.set(heater_name, 'pid_Kd', "%.3f" % (Kd,))
 
 TUNE_PID_DELTA = 5.0
-TUNE_PID_TEMP_TOL = 0.2
+TUNE_PID_TOL = 0.01
 TUNE_PID_SAMPLES = 3
 TUNE_PID_MAX_PEAKS = 40
 
@@ -65,7 +65,8 @@ class ControlAutoTune:
         self.powers = [self.heater_max_power]
         # the target temperature to tune for
         self.target = target
-        # the tolerance that determines if a sample is close enough
+        # the tolerance that determines if the system has converged to an 
+        # acceptable level
         self.tolerance = tolerance
         # the the temp that determines when to turn the heater off
         self.temp_high = target + TUNE_PID_DELTA/2.
@@ -87,8 +88,6 @@ class ControlAutoTune:
         self.started = False
         # did an error happen 
         self.errored = False
-        # the number of samples that are within tolerance
-        self.in_tol = 0
         # data from the test that can be optionally written to a file
         self.data = []        
     def temperature_update(self, read_time, temp, target_temp):
@@ -130,12 +129,11 @@ class ControlAutoTune:
             peaks = float(len(self.peaks)) - 1.
             powers = float(len(self.powers))
             if (peaks % 2.) == 0. and (powers * 2.) == peaks:
-                self.sample()        
-                # check if enough consecutive good samples have been collected 
-                # to calculate the average. if so finish
-                if self.in_tol == TUNE_PID_SAMPLES + 1:
+                # check for convergence
+                if self.converged():
                     self.finish(read_time)
                     return
+                self.sample()       
         # turn the heater off
         if self.heating and temp >= self.temp_high:
             self.heating = False
@@ -167,26 +165,21 @@ class ControlAutoTune:
         self.peak = self.target 
         self.peak_times = []
     def sample(self):
-        if self.within_tolerance():
-            self.in_tol = self.in_tol + 1
-            self.powers.append(self.powers[-1]) 
-        else:
-            # calculate a new power to get closer to the tolerance 
-            self.in_tol = 0
-            self.set_power()
+        # calculate a new power to get closer to the tolerance 
+        self.set_power()
         # provide some useful info to the user
         diff =  (self.peaks[-2][1] + self.peaks[-1][1])/2. - self.target
         last = self.powers[-2]
         curr = self.powers[-1]
         samp = len(self.powers) - 1
-        self.gcode.respond_info("sample:%d deviance:%.4f pwm:%.4f new pwm:%.4f\n" 
+        self.gcode.respond_info("sample:%d diff:%.4f pwm:%.4f new pwm:%.4f\n" 
             % (samp, diff, last, curr))
-    def within_tolerance(self): 
-        peak_low = self.peaks[-2][1]
-        peak_high = self.peaks[-1][1]
-        mid = (peak_low+peak_high)/2.
-        diff = abs(self.target - mid)
-        if diff <= self.tolerance:
+    def converged(self):
+        powers = float(len(self.powers))
+        if powers < TUNE_PID_SAMPLES + 1:
+            return False
+        powers = self.powers[-1*(TUNE_PID_SAMPLES+1):]
+        if (max(powers)-min(powers)) <= TUNE_PID_TOL:
             return True
         return False
     def set_power(self):
@@ -222,7 +215,6 @@ class ControlAutoTune:
         powers = self.powers[:]
         # pop off the 
         peaks.pop(0)
-        powers.pop(-1)
         samples = []
         for i in range(len(powers)):
             samples.append((i, peaks[i*2][0], peaks[i*2][1], peaks[i*2+1][0],
@@ -242,8 +234,9 @@ class ControlAutoTune:
         temp_diff = temp_diff/float(TUNE_PID_SAMPLES) 
         time_diff = time_diff/float(TUNE_PID_SAMPLES)
         amplitude = .5 * abs(temp_diff)
-        # uses the second to last power since an extra 1 is always added at the end
-        Ku = 4. * self.powers[-2] / (math.pi * amplitude) 
+        power = self.powers[-1*(TUNE_PID_SAMPLES):]
+        power = sum(power)/float(len(power))
+        Ku = 4. * power / (math.pi * amplitude) 
         Tu = time_diff
         # Use Ziegler-Nichols method to generate PID parameters
         Ti = 0.5 * Tu
