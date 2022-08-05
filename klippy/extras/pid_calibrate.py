@@ -129,11 +129,12 @@ class ControlAutoTune:
             peaks = float(len(self.peaks)) - 1.
             powers = float(len(self.powers))
             if (peaks % 2.) == 0. and (powers * 2.) == peaks:
+                self.log_info()
                 # check for convergence
                 if self.converged():
                     self.finish(read_time)
                     return
-                self.sample()       
+                self.set_power()
         # turn the heater off
         if self.heating and temp >= self.temp_high:
             self.heating = False
@@ -164,22 +165,31 @@ class ControlAutoTune:
         self.peaks.append((time, self.peak))
         self.peak = self.target 
         self.peak_times = []
-    def sample(self):
-        # calculate a new power to get closer to the tolerance 
-        self.set_power()
+    def log_info(self):
         # provide some useful info to the user
-        diff =  (self.peaks[-2][1] + self.peaks[-1][1])/2. - self.target
-        last = self.powers[-2]
-        curr = self.powers[-1]
-        samp = len(self.powers) - 1
-        self.gcode.respond_info("sample:%d diff:%.4f pwm:%.4f new pwm:%.4f\n" 
-            % (samp, diff, last, curr))
-    def converged(self):
-        powers = float(len(self.powers))
+        sample = len(self.powers)
+        pwm = self.powers[-1]
+        asymmetry =  (self.peaks[-2][1] + self.peaks[-1][1])/2. - self.target
+        tolerance = self.get_sample_tolerance()
+        if tolerance is False:
+            fmt = "sample:%d pwm:%.4f asymmetry:%.4f tolerance:n/a\n"
+            data = (sample, pwm, asymmetry)
+            self.gcode.respond_info(fmt % data)
+        else:
+            fmt = "sample:%d pwm:%.4f asymmetry:%.4f tolerance:%.4f\n"
+            data = (sample, pwm, asymmetry, tolerance)
+            self.gcode.respond_info(fmt % data)
+    def get_sample_tolerance(self):
+        powers = len(self.powers)
         if powers < TUNE_PID_SAMPLES + 1:
             return False
         powers = self.powers[-1*(TUNE_PID_SAMPLES+1):]
-        if (max(powers)-min(powers)) <= TUNE_PID_TOL:
+        return max(powers)-min(powers)
+    def converged(self):
+        tolerance = self.get_sample_tolerance()
+        if tolerance is False:
+           return False
+        if tolerance <= TUNE_PID_TOL:
             return True
         return False
     def set_power(self):
