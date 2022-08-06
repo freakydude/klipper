@@ -189,7 +189,7 @@ class ControlAutoTune:
         tolerance = self.get_sample_tolerance()
         if tolerance is False:
            return False
-        if tolerance <= TUNE_PID_TOL:
+        if tolerance <= self.tolerance:
             return True
         return False
     def set_power(self):
