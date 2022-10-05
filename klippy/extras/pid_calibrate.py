@@ -51,9 +51,9 @@ class PIDCalibrate:
         configfile.set(heater_name, 'pid_Kd', "%.3f" % (Kd,))
 
 TUNE_PID_DELTA = 5.0
-TUNE_PID_TOL = 0.01
+TUNE_PID_TOL = 0.02
 TUNE_PID_SAMPLES = 3
-TUNE_PID_MAX_PEAKS = 40
+TUNE_PID_MAX_PEAKS = 60
 
 class ControlAutoTune:
     def __init__(self, heater, target, tolerance):
