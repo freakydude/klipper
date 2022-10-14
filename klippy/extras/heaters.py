@@ -43,7 +43,7 @@ class Heater:
         self.next_pwm_time = 0.
         self.last_pwm_value = 0.
         # Setup control algorithm sub-class
-        algos = {'watermark': ControlBangBang, 'pid': ControlPID}
+        algos = {'watermark': ControlBangBang, 'pid': ControlPID, 'pid_v': ControlVelocityPID}
         algo = config.getchoice('control', algos)
         self.control = algo(self, config)
         # Setup output heater pin
@@ -220,6 +220,56 @@ class ControlPID:
         else:
             self.prev_err = 0.
             self.int_sum = 0.
+
+    def check_busy(self, eventtime, smoothed_temp, target_temp):
+        temp_diff = target_temp - smoothed_temp
+        return (abs(temp_diff) > PID_SETTLE_DELTA
+                or abs(self.prev_der) > PID_SETTLE_SLOPE)
+
+
+######################################################################
+# Velocity (PID) control algo
+######################################################################
+
+class ControlVelocityPID:
+    def __init__(self, heater, config):
+        self.heater = heater
+        self.heater_max_power = heater.get_max_power()
+        self.dt = heater.pwm_delay
+        self.Kp = config.getfloat('pid_Kp') / PID_PARAM_BASE
+        self.Ki = config.getfloat('pid_Ki') / PID_PARAM_BASE
+        self.Kd = config.getfloat('pid_Kd') / PID_PARAM_BASE
+        self.smooth = 1. + heater.get_smooth_time() / self.dt
+        self.t = [0.] * 3 # temperature readings
+        self.d1 = 0. # previous 1st derivative
+        self.d2 = 0. # previous 2nd derivative
+        self.pwm = 0.
+
+    def temperature_update(self, read_time, temp, target_temp):
+        self.t.pop(0)
+        self.t.append(temp)
+
+        # calculate the derivatives using a modified moving average,
+        # also account for derivative and proportional kick 
+        d1 = self.t[-1] - self.t[-2]
+        self.d1 = ((self.smooth - 1.) * self.d1 + d1)/self.smooth 
+        d2 = (self.t[-1] - 2.*self.t[-2] + self.t[-3])/self.dt
+        self.d2 = ((self.smooth - 1.) * self.d2 + d2)/self.smooth 
+
+        # calcualte the output
+        p = self.Kp * -self.d1
+        i = self.Ki * self.dt * (target_temp - self.t[-1])
+        d = self.Kd * -self.d2
+        self.pwm = max(0., min(self.heater_max_power, self.pwm + p + i + d))
+
+        # ensure no weird artifacts 
+        if target_temp == 0.:
+            self.d1 = 0.
+            self.d2 = 0.
+            self.pwm = 0.
+            
+        # update the heater
+        self.heater.set_pwm(read_time, self.pwm)
 
     def check_busy(self, eventtime, smoothed_temp, target_temp):
         temp_diff = target_temp - smoothed_temp

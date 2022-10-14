@@ -63,6 +63,8 @@ class ControlAutoTune:
         self.gcode = heater.printer.lookup_object('gcode')
         # holds the various max power settings used during the test.  
         self.powers = [self.heater_max_power]
+        # holds the times the power setting was changed.  
+        self.times = []
         # the target temperature to tune for
         self.target = target
         # the tolerance that determines if the system has converged to an 
@@ -138,10 +140,12 @@ class ControlAutoTune:
         # turn the heater off
         if self.heating and temp >= self.temp_high:
             self.heating = False
+            self.times.append(read_time)
             self.heater.alter_target(self.temp_low)
         # turn the heater on
         if not self.heating and temp <= self.temp_low:
             self.heating = True
+            self.times.append(read_time)
             self.heater.alter_target(self.temp_high)
         # set the pwm output based on the heater state 
         if self.heating:
@@ -238,24 +242,32 @@ class ControlAutoTune:
     def calc_pid(self):
         temp_diff = 0.
         time_diff = 0.
+        theta = 0.
         for i in range(1, TUNE_PID_SAMPLES * 2, 2):
             temp_diff = temp_diff + self.peaks[-i][1] - self.peaks[-i-1][1]  
             time_diff = time_diff + self.peaks[-i][0] - self.peaks[-i-2][0]
+            theta = theta + self.peaks[-i][0] - self.times[-i]
         temp_diff = temp_diff/float(TUNE_PID_SAMPLES) 
         time_diff = time_diff/float(TUNE_PID_SAMPLES)
+        theta = theta/float(TUNE_PID_SAMPLES)
         amplitude = .5 * abs(temp_diff)
         power = self.powers[-1*(TUNE_PID_SAMPLES):]
         power = sum(power)/float(len(power))
+        # calculate the various parameters
         Ku = 4. * power / (math.pi * amplitude) 
         Tu = time_diff
+        Wu = (2. * math.pi)/Tu
+        tau = math.tan(math.pi - theta *Wu)/Wu
+        Km = -math.sqrt(tau**2 * Wu**2 + 1.)/Ku
+        # log the extra details
+        logging.info("Ziegler-Nichols constants: Ku=%f Tu=%f", Ku, Tu)
+        logging.info("Cohen-Coon constants: Km=%f Theta=%f Tau=%f", Km, theta, tau)
         # Use Ziegler-Nichols method to generate PID parameters
         Ti = 0.5 * Tu
         Td = 0.125 * Tu
         Kp = 0.6 * Ku * heaters.PID_PARAM_BASE
         Ki = Kp / Ti
         Kd = Kp * Td
-        logging.info("Autotune: raw=%f/%f Ku=%f Tu=%f  Kp=%f Ki=%f Kd=%f",
-                     temp_diff, self.powers[-2], Ku, Tu, Kp, Ki, Kd)
         return Kp, Ki, Kd
 
 def load_config(config):
